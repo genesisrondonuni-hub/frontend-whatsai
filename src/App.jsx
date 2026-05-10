@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { 
   Users, Play, Settings, MessageSquare, Send, Sparkles, CheckCircle2, 
   Loader2, Smartphone, Save, BrainCircuit, Wand2, Key, RefreshCw, 
-  AlertCircle, ChevronRight, LayoutDashboard, Database
+  AlertCircle, ChevronRight, LayoutDashboard, Database, Plus
 } from 'lucide-react';
 
 // El entorno proporciona la clave si no se ingresa una personalizada
@@ -15,6 +15,7 @@ export default function App() {
   const [isSaved, setIsSaved] = useState(false);
   const [apiStatus, setApiStatus] = useState('desconocido');
   const [qrCode, setQrCode] = useState('');
+  const [lastCheck, setLastCheck] = useState(null);
   
   // --- Estados de Campaña ---
   const [isGenerating, setIsGenerating] = useState(false);
@@ -22,7 +23,7 @@ export default function App() {
   const [sendingProgress, setSendingProgress] = useState({ current: 0, total: 0, status: 'idle' });
 
   // --- Datos de Ejemplo (Simulando 1 de las 50 listas) ---
-  const [lists] = useState([
+  const [lists, setLists] = useState([
     {
       id: 'list-1',
       name: 'Clientes Potenciales - Sector A',
@@ -61,13 +62,17 @@ export default function App() {
   const checkApiStatus = async (url) => {
     if (!url) return;
     try {
-      // Limpiamos la URL para apuntar al endpoint de status
-      const baseUrl = url.replace(/\/send\/?$/, "");
+      // Limpiamos la URL para asegurar que apuntamos al endpoint de status
+      const baseUrl = url.split('/send')[0].replace(/\/$/, "");
       const res = await fetch(`${baseUrl}/status`);
+      if (!res.ok) throw new Error('Error en servidor');
+      
       const data = await res.json();
       setApiStatus(data.whatsappReady ? 'conectado' : 'desconectado');
       setQrCode(data.qr || '');
+      setLastCheck(new Date().toLocaleTimeString());
     } catch (e) {
+      console.error("Error de conexión:", e);
       setApiStatus('error');
     }
   };
@@ -82,6 +87,8 @@ export default function App() {
   // --- Lógica de Gemini con Exponential Backoff ---
   const generateWithGemini = async (prompt, retryCount = 0) => {
     const activeApiKey = settings.geminiKey || systemApiKey;
+    if (!activeApiKey) throw new Error("API Key faltante");
+
     try {
       const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${activeApiKey}`, {
         method: 'POST',
@@ -99,7 +106,8 @@ export default function App() {
       }
 
       const result = await response.json();
-      return JSON.parse(result.candidates[0].content.parts[0].text);
+      const content = result.candidates[0].content.parts[0].text;
+      return JSON.parse(content);
     } catch (error) {
       if (retryCount < 5) {
         const delay = Math.pow(2, retryCount) * 1000;
@@ -139,7 +147,7 @@ export default function App() {
   return (
     <div className="flex h-screen bg-slate-50 font-sans text-slate-900 overflow-hidden">
       {/* Sidebar Lateral */}
-      <aside className="w-72 bg-slate-900 text-white flex flex-col p-6 shadow-2xl">
+      <aside className="w-72 bg-slate-900 text-white flex flex-col p-6 shadow-2xl shrink-0">
         <div className="flex items-center gap-3 mb-10 px-2">
           <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center shadow-lg shadow-blue-500/20">
             <Sparkles size={22} className="text-white" />
@@ -170,11 +178,19 @@ export default function App() {
         </nav>
         
         <div className="mt-auto p-4 bg-white/5 rounded-2xl border border-white/10">
-          <p className="text-[10px] text-slate-500 font-bold uppercase mb-2">Estado del Motor</p>
-          <div className="flex items-center gap-2">
-             <div className={`w-2 h-2 rounded-full ${apiStatus === 'conectado' ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
-             <span className="text-xs font-medium">{apiStatus === 'conectado' ? 'En línea' : 'Desconectado'}</span>
+          <div className="flex justify-between items-center mb-2">
+            <p className="text-[10px] text-slate-500 font-bold uppercase">Estado del Motor</p>
+            <button onClick={() => checkApiStatus(settings.waApiUrl)} className="text-blue-400 hover:text-blue-300 transition-colors">
+              <RefreshCw size={12} className={apiStatus === 'desconocido' ? 'animate-spin' : ''} />
+            </button>
           </div>
+          <div className="flex items-center gap-2">
+             <div className={`w-2 h-2 rounded-full ${apiStatus === 'conectado' ? 'bg-green-500 animate-pulse' : apiStatus === 'error' ? 'bg-red-500' : 'bg-amber-500'}`} />
+             <span className="text-xs font-medium">
+               {apiStatus === 'conectado' ? 'Conectado' : apiStatus === 'error' ? 'Sin conexión' : 'Pendiente QR'}
+             </span>
+          </div>
+          {lastCheck && <p className="text-[9px] text-slate-500 mt-2 italic">Última rev: {lastCheck}</p>}
         </div>
       </aside>
 
@@ -190,18 +206,20 @@ export default function App() {
             <div className="bg-white rounded-[2.5rem] p-10 shadow-sm border border-slate-200">
                <div className="flex justify-between items-center mb-8">
                  <h3 className="text-xl font-bold flex items-center gap-3"><Smartphone className="text-blue-600"/> Servidor de Mensajería</h3>
-                 {apiStatus === 'error' && <span className="text-red-500 text-xs font-bold flex items-center gap-1"><AlertCircle size={14}/> URL no válida</span>}
+                 {apiStatus === 'error' && <span className="text-red-500 text-xs font-bold flex items-center gap-1"><AlertCircle size={14}/> Error de enlace</span>}
                </div>
 
                <div className="space-y-2 mb-8">
                  <label className="text-xs font-black text-slate-400 uppercase ml-1">URL de Render</label>
-                 <input 
-                   type="url" 
-                   value={settings.waApiUrl}
-                   onChange={e => setSettings({...settings, waApiUrl: e.target.value})}
-                   placeholder="https://mi-app.onrender.com/send"
-                   className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl p-5 focus:border-blue-600 outline-none transition-all font-medium"
-                 />
+                 <div className="flex gap-2">
+                  <input 
+                    type="url" 
+                    value={settings.waApiUrl}
+                    onChange={e => setSettings({...settings, waApiUrl: e.target.value})}
+                    placeholder="https://mi-app.onrender.com/send"
+                    className="flex-1 bg-slate-50 border-2 border-slate-100 rounded-2xl p-5 focus:border-blue-600 outline-none transition-all font-medium"
+                  />
+                 </div>
                </div>
 
                {apiStatus === 'desconectado' && qrCode && (
@@ -248,7 +266,7 @@ export default function App() {
               onClick={handleSaveSettings} 
               className="w-full bg-slate-900 text-white rounded-2xl py-6 font-black shadow-2xl hover:bg-black transition-all active:scale-[0.98] flex items-center justify-center gap-3"
             >
-              {isSaved ? <><CheckCircle2 size={20}/> CONFIGURACIÓN GUARDADA</> : <><Save size={20}/> GUARDAR Y VINCULAR</>}
+              {isSaved ? <><CheckCircle2 size={20}/> DATOS GUARDADOS</> : <><Save size={20}/> GUARDAR Y VINCULAR</>}
             </button>
           </div>
         )}
@@ -260,7 +278,7 @@ export default function App() {
                   <h3 className="text-2xl font-black italic">Redactar Mensaje Maestro</h3>
                   <div className="flex items-center gap-2 bg-slate-100 px-4 py-2 rounded-xl">
                     <Database size={16} className="text-slate-500" />
-                    <span className="text-xs font-bold text-slate-600">{lists[0].name}</span>
+                    <span className="text-xs font-bold text-slate-600">{lists[0]?.name || "Sin lista"}</span>
                   </div>
                 </div>
                 
@@ -331,24 +349,30 @@ export default function App() {
              </div>
 
              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-               {lists.map(list => (
-                 <div key={list.id} className="bg-white p-8 rounded-[2.5rem] border border-slate-200 shadow-sm hover:shadow-xl transition-all">
-                    <h3 className="text-xl font-bold mb-4">{list.name}</h3>
-                    <div className="space-y-3">
-                       {list.contacts.map((c, i) => (
-                         <div key={i} className="flex items-center justify-between p-3 bg-slate-50 rounded-xl border border-slate-100">
-                           <div>
-                             <p className="text-sm font-bold text-slate-800">{c.nombre} {c.apellido}</p>
-                             <p className="text-[10px] text-slate-400 font-bold">{c.telefono}</p>
+               {lists.length > 0 ? (
+                 lists.map(list => (
+                   <div key={list.id} className="bg-white p-8 rounded-[2.5rem] border border-slate-200 shadow-sm hover:shadow-xl transition-all">
+                      <h3 className="text-xl font-bold mb-4">{list.name}</h3>
+                      <div className="space-y-3">
+                         {list.contacts.map((c, i) => (
+                           <div key={i} className="flex items-center justify-between p-3 bg-slate-50 rounded-xl border border-slate-100">
+                             <div>
+                               <p className="text-sm font-bold text-slate-800">{c.nombre} {c.apellido}</p>
+                               <p className="text-[10px] text-slate-400 font-bold">{c.telefono}</p>
+                             </div>
+                             <span className={`text-[10px] font-bold px-2 py-1 rounded-md ${c.genero === 'F' ? 'bg-pink-100 text-pink-600' : 'bg-blue-100 text-blue-600'}`}>
+                               {c.genero}
+                             </span>
                            </div>
-                           <span className={`text-[10px] font-bold px-2 py-1 rounded-md ${c.genero === 'F' ? 'bg-pink-100 text-pink-600' : 'bg-blue-100 text-blue-600'}`}>
-                             {c.genero}
-                           </span>
-                         </div>
-                       ))}
-                    </div>
+                         ))}
+                      </div>
+                   </div>
+                 ))
+               ) : (
+                 <div className="col-span-2 text-center py-20 bg-white rounded-3xl border-2 border-dashed border-slate-100">
+                   <p className="text-slate-400 italic">No hay directorios cargados aún.</p>
                  </div>
-               ))}
+               )}
              </div>
           </div>
         )}
