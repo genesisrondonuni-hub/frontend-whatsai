@@ -2,28 +2,23 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { 
   Users, Play, Settings, MessageSquare, Send, Sparkles, CheckCircle2, 
   Loader2, Smartphone, Save, BrainCircuit, Wand2, Key, RefreshCw, 
-  AlertCircle, ChevronRight, LayoutDashboard, Database, Plus
+  AlertCircle, ChevronRight, LayoutDashboard, Database, Plus, Trash2, LogOut
 } from 'lucide-react';
 
-// El entorno proporciona la clave si no se ingresa una personalizada
 const systemApiKey = ""; 
 
 export default function App() {
-  // --- Estados de Navegación y Configuración ---
   const [activeTab, setActiveTab] = useState('config');
   const [settings, setSettings] = useState({ geminiKey: '', waApiUrl: '' });
   const [isSaved, setIsSaved] = useState(false);
-  const [apiStatus, setApiStatus] = useState('desconocido');
+  const [apiStatus, setApiStatus] = useState('desconocido'); // 'conectado', 'desconectado', 'error', 'desconocido'
   const [qrCode, setQrCode] = useState('');
   const [lastCheck, setLastCheck] = useState(null);
-  
-  // --- Estados de Campaña ---
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedMessages, setGeneratedMessages] = useState([]);
-  const [sendingProgress, setSendingProgress] = useState({ current: 0, total: 0, status: 'idle' });
 
-  // --- Datos de Ejemplo (Simulando 1 de las 50 listas) ---
-  const [lists, setLists] = useState([
+  // Datos de Directorio iniciales
+  const initialLists = [
     {
       id: 'list-1',
       name: 'Clientes Potenciales - Sector A',
@@ -33,14 +28,14 @@ export default function App() {
         { telefono: '584140001122', nombre: 'Carlos', apellido: 'Rodríguez', genero: 'M' }
       ]
     }
-  ]);
+  ];
 
+  const [lists, setLists] = useState(initialLists);
   const [currentCampaign, setCurrentCampaign] = useState({
     baseMessage: 'Hola {{Nombre}}, ¿cómo estás? Tenemos una oferta especial para ti.',
     listId: 'list-1'
   });
 
-  // --- Carga Inicial ---
   useEffect(() => {
     const saved = localStorage.getItem('whatsAiSettingsPro');
     if (saved) {
@@ -48,9 +43,18 @@ export default function App() {
       setSettings(parsed);
       if (parsed.waApiUrl) checkApiStatus(parsed.waApiUrl);
     }
+    const savedLists = localStorage.getItem('whatsAiLists');
+    if (savedLists) {
+      const parsedLists = JSON.parse(savedLists);
+      if (parsedLists.length > 0) setLists(parsedLists);
+    }
   }, []);
 
-  // --- Polling: Revisa el estado del Servidor y el QR cada 5 segundos ---
+  useEffect(() => {
+    localStorage.setItem('whatsAiLists', JSON.stringify(lists));
+  }, [lists]);
+
+  // Polling automático con "Cache Buster" para evitar datos viejos
   useEffect(() => {
     let interval;
     if (settings.waApiUrl) {
@@ -62,17 +66,27 @@ export default function App() {
   const checkApiStatus = async (url) => {
     if (!url) return;
     try {
-      // Limpiamos la URL para asegurar que apuntamos al endpoint de status
-      const baseUrl = url.split('/send')[0].replace(/\/$/, "");
-      const res = await fetch(`${baseUrl}/status`);
-      if (!res.ok) throw new Error('Error en servidor');
+      const baseUrl = url.trim().split('/send')[0].replace(/\/$/, "");
+      // Añadimos un parámetro aleatorio (?t=...) para que el navegador no use la caché
+      const res = await fetch(`${baseUrl}/status?t=${Date.now()}`, {
+        method: 'GET',
+        headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' }
+      });
+
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       
       const data = await res.json();
-      setApiStatus(data.whatsappReady ? 'conectado' : 'desconectado');
-      setQrCode(data.qr || '');
+      
+      // Actualizamos el estado basado en lo que dice el servidor REALMENTE
+      if (data.whatsappReady) {
+        setApiStatus('conectado');
+        setQrCode('');
+      } else {
+        setApiStatus('desconectado');
+        setQrCode(data.qr || '');
+      }
       setLastCheck(new Date().toLocaleTimeString());
     } catch (e) {
-      console.error("Error de conexión:", e);
       setApiStatus('error');
     }
   };
@@ -84,70 +98,40 @@ export default function App() {
     setTimeout(() => setIsSaved(false), 3000);
   };
 
-  // --- Lógica de Gemini con Exponential Backoff ---
-  const generateWithGemini = async (prompt, retryCount = 0) => {
-    const activeApiKey = settings.geminiKey || systemApiKey;
-    if (!activeApiKey) throw new Error("API Key faltante");
-
-    try {
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${activeApiKey}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { responseMimeType: "application/json" }
-        })
-      });
-
-      if (!response.ok && retryCount < 5) {
-        const delay = Math.pow(2, retryCount) * 1000;
-        await new Promise(resolve => setTimeout(resolve, delay));
-        return generateWithGemini(prompt, retryCount + 1);
-      }
-
-      const result = await response.json();
-      const content = result.candidates[0].content.parts[0].text;
-      return JSON.parse(content);
-    } catch (error) {
-      if (retryCount < 5) {
-        const delay = Math.pow(2, retryCount) * 1000;
-        await new Promise(resolve => setTimeout(resolve, delay));
-        return generateWithGemini(prompt, retryCount + 1);
-      }
-      throw error;
-    }
+  const resetLists = () => {
+    setLists(initialLists);
   };
 
   const handleProcessIA = async () => {
     if (!currentCampaign.baseMessage) return;
     setIsGenerating(true);
-    
     const targetList = lists.find(l => l.id === currentCampaign.listId);
+    if (!targetList) return;
     
-    const prompt = `
-      Eres un experto en marketing por WhatsApp. Reescribe este mensaje para cada contacto.
-      Ajusta el género (M/F) para que sea gramaticalmente correcto (ej: Estimado/Estimada).
-      Devuelve un JSON con este formato: [{"telefono": "string", "mensaje": "string"}].
-      MENSAJE BASE: "${currentCampaign.baseMessage}"
-      CONTACTOS: ${JSON.stringify(targetList.contacts)}
-    `;
+    const prompt = `Reescribe este mensaje para cada contacto. JSON: [{"telefono": "string", "mensaje": "string"}]. BASE: "${currentCampaign.baseMessage}" DATA: ${JSON.stringify(targetList.contacts)}`;
 
     try {
-      const variations = await generateWithGemini(prompt);
-      setGeneratedMessages(variations.map(v => ({ ...v, status: 'pending' })));
+      const activeApiKey = settings.geminiKey || systemApiKey;
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${activeApiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { responseMimeType: "application/json" } })
+      });
+      const result = await response.json();
+      const content = JSON.parse(result.candidates[0].content.parts[0].text);
+      setGeneratedMessages(content.map(v => ({ ...v, status: 'pending' })));
       setActiveTab('envios');
     } catch (e) {
-      console.error("Fallo en la IA:", e);
+      console.error(e);
     } finally {
       setIsGenerating(false);
     }
   };
 
-  // --- Renderizado de Vistas ---
   return (
-    <div className="flex h-screen bg-slate-50 font-sans text-slate-900 overflow-hidden">
-      {/* Sidebar Lateral */}
-      <aside className="w-72 bg-slate-900 text-white flex flex-col p-6 shadow-2xl shrink-0">
+    <div className="flex h-screen bg-[#f8fafc] font-sans text-slate-900 overflow-hidden">
+      {/* Sidebar */}
+      <aside className="w-72 bg-[#0f172a] text-white flex flex-col p-6 shadow-2xl shrink-0">
         <div className="flex items-center gap-3 mb-10 px-2">
           <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center shadow-lg shadow-blue-500/20">
             <Sparkles size={22} className="text-white" />
@@ -179,200 +163,158 @@ export default function App() {
         
         <div className="mt-auto p-4 bg-white/5 rounded-2xl border border-white/10">
           <div className="flex justify-between items-center mb-2">
-            <p className="text-[10px] text-slate-500 font-bold uppercase">Estado del Motor</p>
-            <button onClick={() => checkApiStatus(settings.waApiUrl)} className="text-blue-400 hover:text-blue-300 transition-colors">
+            <p className="text-[10px] text-slate-500 font-bold uppercase">Estado Motor</p>
+            <button onClick={() => checkApiStatus(settings.waApiUrl)} className="text-blue-400 hover:text-blue-300">
               <RefreshCw size={12} className={apiStatus === 'desconocido' ? 'animate-spin' : ''} />
             </button>
           </div>
           <div className="flex items-center gap-2">
              <div className={`w-2 h-2 rounded-full ${apiStatus === 'conectado' ? 'bg-green-500 animate-pulse' : apiStatus === 'error' ? 'bg-red-500' : 'bg-amber-500'}`} />
-             <span className="text-xs font-medium">
-               {apiStatus === 'conectado' ? 'Conectado' : apiStatus === 'error' ? 'Sin conexión' : 'Pendiente QR'}
+             <span className="text-[11px] font-bold uppercase tracking-tight">
+               {apiStatus === 'conectado' ? 'Conectado' : apiStatus === 'error' ? 'Error Enlace' : 'Pendiente QR'}
              </span>
           </div>
-          {lastCheck && <p className="text-[9px] text-slate-500 mt-2 italic">Última rev: {lastCheck}</p>}
+          {lastCheck && <p className="text-[9px] text-slate-500 mt-2 italic">Sincronizado: {lastCheck}</p>}
         </div>
       </aside>
 
-      {/* Área de Contenido Principal */}
+      {/* Main */}
       <main className="flex-1 p-8 md:p-16 overflow-y-auto">
         {activeTab === 'config' && (
           <div className="max-w-3xl mx-auto space-y-8 animate-in fade-in duration-500">
-            <div>
-              <h2 className="text-4xl font-black tracking-tight">Configuración</h2>
-              <p className="text-slate-500 mt-2">Vincula tu cuenta de WhatsApp y activa Gemini.</p>
-            </div>
+            <h2 className="text-4xl font-black">Configuración</h2>
             
             <div className="bg-white rounded-[2.5rem] p-10 shadow-sm border border-slate-200">
-               <div className="flex justify-between items-center mb-8">
-                 <h3 className="text-xl font-bold flex items-center gap-3"><Smartphone className="text-blue-600"/> Servidor de Mensajería</h3>
-                 {apiStatus === 'error' && <span className="text-red-500 text-xs font-bold flex items-center gap-1"><AlertCircle size={14}/> Error de enlace</span>}
-               </div>
+               <h3 className="text-xl font-bold mb-6 flex items-center gap-3"><Smartphone className="text-blue-600"/> Enlace Render</h3>
+               <input 
+                 type="url" 
+                 value={settings.waApiUrl}
+                 onChange={e => setSettings({...settings, waApiUrl: e.target.value})}
+                 placeholder="https://backend-whatsai.onrender.com"
+                 className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl p-5 mb-8 outline-none focus:border-blue-600"
+               />
 
-               <div className="space-y-2 mb-8">
-                 <label className="text-xs font-black text-slate-400 uppercase ml-1">URL de Render</label>
-                 <div className="flex gap-2">
-                  <input 
-                    type="url" 
-                    value={settings.waApiUrl}
-                    onChange={e => setSettings({...settings, waApiUrl: e.target.value})}
-                    placeholder="https://mi-app.onrender.com/send"
-                    className="flex-1 bg-slate-50 border-2 border-slate-100 rounded-2xl p-5 focus:border-blue-600 outline-none transition-all font-medium"
-                  />
-                 </div>
-               </div>
-
-               {apiStatus === 'desconectado' && qrCode && (
-                 <div className="flex flex-col items-center gap-6 bg-blue-50/50 p-10 rounded-[2rem] border-2 border-dashed border-blue-200 animate-in zoom-in-95">
+               {apiStatus === 'desconectado' && qrCode ? (
+                 <div className="flex flex-col items-center gap-6 bg-blue-50/50 p-10 rounded-[2rem] border-2 border-dashed border-blue-200">
                    <div className="bg-white p-4 rounded-3xl shadow-2xl">
                      <img src={qrCode} alt="QR" className="w-56 h-56" />
                    </div>
                    <div className="text-center">
-                    <p className="font-black text-blue-900 text-lg">Escanea el Código QR</p>
-                    <p className="text-sm text-blue-600/70">Abre WhatsApp en tu móvil para vincular el dispositivo.</p>
+                    <p className="font-black text-blue-900 text-lg italic">¡Escanea Ahora!</p>
+                    <p className="text-sm text-blue-600/70">Si el QR no cambia tras escanear, espera 30 segundos.</p>
                    </div>
                  </div>
-               )}
-
-               {apiStatus === 'conectado' && (
+               ) : apiStatus === 'conectado' ? (
                  <div className="text-center py-12 bg-green-50/50 rounded-[2rem] border-2 border-dashed border-green-200">
-                    <div className="w-20 h-20 bg-green-500 text-white rounded-full flex items-center justify-center mx-auto mb-6 shadow-lg shadow-green-200">
-                      <CheckCircle2 size={40} />
-                    </div>
-                    <p className="text-2xl font-black text-slate-800">¡Conexión Activa!</p>
-                    <p className="text-slate-500 mt-1">El sistema está listo para procesar tus campañas.</p>
+                    <CheckCircle2 size={48} className="text-green-500 mx-auto mb-4" />
+                    <p className="text-2xl font-black text-slate-800">WhatsApp Vinculado</p>
+                    <p className="text-slate-500">Todo listo para enviar tus campañas.</p>
                  </div>
+               ) : (
+                 <div className="text-center py-10 text-slate-400 italic">Cargando estado del servidor...</div>
                )}
             </div>
 
             <div className="bg-white rounded-[2.5rem] p-10 shadow-sm border border-slate-200">
                <h3 className="text-xl font-bold mb-6 flex items-center gap-3"><BrainCircuit className="text-purple-600"/> Inteligencia Artificial</h3>
-               <div className="space-y-2">
-                 <label className="text-xs font-black text-slate-400 uppercase ml-1">Gemini API Key</label>
-                 <div className="relative">
-                   <Key className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
-                   <input 
-                     type="password" 
-                     value={settings.geminiKey}
-                     onChange={e => setSettings({...settings, geminiKey: e.target.value})}
-                     placeholder="Tu clave secreta de Google AI..."
-                     className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl p-5 pl-14 focus:border-purple-600 outline-none transition-all"
-                   />
-                 </div>
-               </div>
+               <input 
+                 type="password" 
+                 value={settings.geminiKey}
+                 onChange={e => setSettings({...settings, geminiKey: e.target.value})}
+                 placeholder="API Key de Gemini..."
+                 className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl p-5 outline-none focus:border-purple-600"
+               />
             </div>
 
-            <button 
-              onClick={handleSaveSettings} 
-              className="w-full bg-slate-900 text-white rounded-2xl py-6 font-black shadow-2xl hover:bg-black transition-all active:scale-[0.98] flex items-center justify-center gap-3"
-            >
-              {isSaved ? <><CheckCircle2 size={20}/> DATOS GUARDADOS</> : <><Save size={20}/> GUARDAR Y VINCULAR</>}
+            <button onClick={handleSaveSettings} className="w-full bg-slate-900 text-white rounded-2xl py-6 font-black shadow-xl hover:bg-black transition-all">
+              {isSaved ? 'CONFIGURACIÓN ACTUALIZADA' : 'GUARDAR Y VINCULAR'}
             </button>
           </div>
         )}
 
-        {activeTab === 'campana' && (
-          <div className="max-w-4xl mx-auto space-y-8 animate-in slide-in-from-right-8 duration-500">
-             <div className="bg-white rounded-[2.5rem] p-10 shadow-sm border border-slate-200">
-                <div className="flex justify-between items-center mb-8">
-                  <h3 className="text-2xl font-black italic">Redactar Mensaje Maestro</h3>
-                  <div className="flex items-center gap-2 bg-slate-100 px-4 py-2 rounded-xl">
-                    <Database size={16} className="text-slate-500" />
-                    <span className="text-xs font-bold text-slate-600">{lists[0]?.name || "Sin lista"}</span>
-                  </div>
-                </div>
-                
-                <textarea 
-                  value={currentCampaign.baseMessage}
-                  onChange={e => setCurrentCampaign({...currentCampaign, baseMessage: e.target.value})}
-                  className="w-full h-48 bg-slate-50 border-2 border-slate-100 rounded-[2rem] p-8 outline-none focus:border-blue-600 text-lg leading-relaxed shadow-inner"
-                  placeholder="Escribe el mensaje que servirá de base para la IA..."
-                />
-                
-                <div className="mt-8">
-                  <button 
-                    disabled={isGenerating || apiStatus !== 'conectado'}
-                    onClick={handleProcessIA}
-                    className="w-full bg-gradient-to-r from-blue-600 to-indigo-700 text-white rounded-2xl py-6 font-black flex items-center justify-center gap-4 shadow-xl hover:shadow-blue-200 transition-all disabled:opacity-50 disabled:grayscale"
-                  >
-                    {isGenerating ? <RefreshCw className="animate-spin" /> : <Wand2 size={22} />}
-                    PERSONALIZAR CON INTELIGENCIA ARTIFICIAL
-                  </button>
-                  {apiStatus !== 'conectado' && <p className="text-center text-red-500 text-[10px] font-bold mt-3 uppercase tracking-wider">VINCULA WHATSAPP EN AJUSTES PARA CONTINUAR</p>}
-                </div>
-             </div>
-          </div>
-        )}
-
-        {activeTab === 'envios' && (
-          <div className="max-w-5xl mx-auto animate-in fade-in duration-700">
-            <div className="flex justify-between items-end mb-8">
-               <h2 className="text-3xl font-black">Cola de Mensajes</h2>
-               <p className="text-slate-400 font-bold text-sm italic">{generatedMessages.length} mensajes listos</p>
-            </div>
-
-            <div className="grid gap-4">
-              {generatedMessages.length === 0 ? (
-                <div className="text-center py-24 bg-white rounded-[3rem] border-2 border-dashed border-slate-100">
-                  <Loader2 className="mx-auto text-slate-200 mb-4 animate-spin" size={40} />
-                  <p className="text-slate-400 font-medium italic">Esperando que la IA genere las variaciones...</p>
-                </div>
-              ) : (
-                generatedMessages.map((msg, idx) => (
-                  <div key={idx} className="bg-white p-8 rounded-[2rem] border border-slate-200 shadow-sm flex items-center justify-between hover:border-blue-400 transition-all group">
-                    <div className="flex-1 pr-8">
-                       <div className="flex items-center gap-3 mb-2">
-                         <span className="text-[10px] font-black bg-blue-50 text-blue-600 px-2 py-1 rounded-md uppercase tracking-tighter">Destino</span>
-                         <span className="text-sm font-black text-slate-800">{msg.telefono}</span>
-                       </div>
-                       <p className="text-slate-600 text-sm leading-relaxed">{msg.mensaje}</p>
-                    </div>
-                    <div className="shrink-0">
-                       <button className="w-12 h-12 bg-slate-50 text-slate-300 rounded-full flex items-center justify-center group-hover:bg-blue-600 group-hover:text-white transition-all">
-                         <Send size={18} />
-                       </button>
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-        )}
-
+        {/* Pestaña Directorios */}
         {activeTab === 'listas' && (
           <div className="max-w-5xl mx-auto space-y-8 animate-in fade-in">
              <div className="flex justify-between items-center">
                <h2 className="text-3xl font-black">Directorios</h2>
-               <button className="bg-slate-900 text-white px-6 py-3 rounded-xl font-bold flex items-center gap-2 hover:bg-black transition-all">
-                 <Plus size={18} /> Cargar Nueva Lista
+               <button onClick={resetLists} className="p-3 bg-slate-100 text-slate-400 rounded-xl hover:text-red-500 transition-all">
+                  <RefreshCw size={20} />
                </button>
              </div>
 
              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-               {lists.length > 0 ? (
-                 lists.map(list => (
-                   <div key={list.id} className="bg-white p-8 rounded-[2.5rem] border border-slate-200 shadow-sm hover:shadow-xl transition-all">
-                      <h3 className="text-xl font-bold mb-4">{list.name}</h3>
-                      <div className="space-y-3">
-                         {list.contacts.map((c, i) => (
-                           <div key={i} className="flex items-center justify-between p-3 bg-slate-50 rounded-xl border border-slate-100">
-                             <div>
-                               <p className="text-sm font-bold text-slate-800">{c.nombre} {c.apellido}</p>
-                               <p className="text-[10px] text-slate-400 font-bold">{c.telefono}</p>
-                             </div>
-                             <span className={`text-[10px] font-bold px-2 py-1 rounded-md ${c.genero === 'F' ? 'bg-pink-100 text-pink-600' : 'bg-blue-100 text-blue-600'}`}>
-                               {c.genero}
-                             </span>
+               {lists.map(list => (
+                 <div key={list.id} className="bg-white p-8 rounded-[2.5rem] border border-slate-200 shadow-sm hover:shadow-xl transition-all">
+                    <h3 className="text-xl font-bold mb-6 flex items-center justify-between">
+                      {list.name}
+                      <span className="text-[10px] bg-blue-50 text-blue-600 px-3 py-1 rounded-full">{list.contacts.length} Contactos</span>
+                    </h3>
+                    <div className="space-y-3">
+                       {list.contacts.map((c, i) => (
+                         <div key={i} className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                           <div>
+                             <p className="text-sm font-black text-slate-800">{c.nombre} {c.apellido}</p>
+                             <p className="text-[10px] text-slate-400 font-bold tracking-widest">{c.telefono}</p>
                            </div>
-                         ))}
-                      </div>
-                   </div>
-                 ))
-               ) : (
-                 <div className="col-span-2 text-center py-20 bg-white rounded-3xl border-2 border-dashed border-slate-100">
-                   <p className="text-slate-400 italic">No hay directorios cargados aún.</p>
+                           <span className={`w-8 h-8 rounded-full flex items-center justify-center text-[10px] font-bold ${c.genero === 'F' ? 'bg-pink-100 text-pink-600' : 'bg-blue-100 text-blue-600'}`}>
+                             {c.genero}
+                           </span>
+                         </div>
+                       ))}
+                    </div>
                  </div>
-               )}
+               ))}
+               <button className="border-4 border-dashed border-slate-200 rounded-[2.5rem] flex flex-col items-center justify-center p-12 text-slate-300 hover:text-blue-400 hover:border-blue-200 transition-all">
+                 <Plus size={48} className="mb-2" />
+                 <span className="font-bold uppercase tracking-tighter">Nueva Lista (Sheets)</span>
+               </button>
+             </div>
+          </div>
+        )}
+
+        {/* Cola de Envíos */}
+        {activeTab === 'envios' && (
+          <div className="max-w-5xl mx-auto space-y-6">
+            <h2 className="text-3xl font-black mb-8">Cola de Ejecución</h2>
+            {generatedMessages.length === 0 ? (
+              <div className="text-center py-32 bg-white rounded-[3rem] border-2 border-dashed border-slate-100 text-slate-300 italic">
+                No hay mensajes pendientes. Ve a "Campaña IA" para generar envíos.
+              </div>
+            ) : (
+              generatedMessages.map((msg, idx) => (
+                <div key={idx} className="bg-white p-8 rounded-[2rem] border border-slate-200 flex items-center justify-between shadow-sm hover:border-blue-500 transition-all group">
+                   <div className="space-y-2">
+                     <p className="text-xs font-black text-blue-500 tracking-widest uppercase">{msg.telefono}</p>
+                     <p className="text-slate-700 leading-relaxed font-medium">{msg.mensaje}</p>
+                   </div>
+                   <button className="w-14 h-14 bg-slate-900 text-white rounded-full flex items-center justify-center shadow-lg group-hover:scale-110 transition-transform">
+                     <Send size={20} />
+                   </button>
+                </div>
+              ))
+            )}
+          </div>
+        )}
+
+        {activeTab === 'campana' && (
+          <div className="max-w-4xl mx-auto animate-in slide-in-from-right-8 duration-500">
+             <div className="bg-white rounded-[2.5rem] p-10 shadow-sm border border-slate-200">
+                <h3 className="text-2xl font-black mb-8 italic">Mensaje Base</h3>
+                <textarea 
+                  value={currentCampaign.baseMessage}
+                  onChange={e => setCurrentCampaign({...currentCampaign, baseMessage: e.target.value})}
+                  className="w-full h-48 bg-slate-50 border-2 border-slate-100 rounded-[2rem] p-8 outline-none focus:border-blue-600 text-lg shadow-inner"
+                  placeholder="Hola {{Nombre}}..."
+                />
+                <button 
+                  disabled={isGenerating || apiStatus !== 'conectado'}
+                  onClick={handleProcessIA}
+                  className="w-full mt-8 bg-gradient-to-r from-blue-600 to-indigo-700 text-white rounded-2xl py-6 font-black shadow-xl disabled:opacity-50 flex items-center justify-center gap-4"
+                >
+                  {isGenerating ? <RefreshCw className="animate-spin" /> : <Wand2 size={24} />}
+                  TRANSFORMAR CON INTELIGENCIA ARTIFICIAL
+                </button>
+                {apiStatus !== 'conectado' && <p className="text-center text-red-500 text-[10px] font-black mt-4 uppercase italic">⚠ Debes vincular WhatsApp en Ajustes primero</p>}
              </div>
           </div>
         )}
