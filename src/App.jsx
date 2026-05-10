@@ -371,7 +371,7 @@ export default function App() {
              <div className="flex justify-between items-center mb-10">
                <div className="space-y-1">
                    <h2 className="text-5xl font-black italic tracking-tighter uppercase">Directorios</h2>
-                   <p className="text-slate-500 font-bold">Gestione sus 50 bases de datos inteligentes.</p>
+                   <p className="text-slate-500 font-bold">Gestione sus bases de datos inteligentes.</p>
                </div>
                <button className="bg-slate-900 text-white px-8 py-5 rounded-2xl font-black text-sm flex items-center gap-3 hover:shadow-2xl transition-all hover:scale-105 active:scale-95 uppercase tracking-widest">
                  <Plus size={20} /> Nueva Lista
@@ -422,7 +422,7 @@ export default function App() {
           </div>
         )}
 
-        {/* Campaña y Ejecución (Resumen) */}
+        {/* Campaña y Ejecución */}
         {activeTab === 'campana' && (
             <div className="max-w-4xl mx-auto space-y-8 animate-in slide-in-from-right-12 duration-700">
                 <header className="space-y-2 mb-12">
