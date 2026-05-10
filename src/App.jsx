@@ -91,7 +91,7 @@ export default function App() {
           baseUrl = `https://${baseUrl}`;
       }
 
-      // 2. Consulta al Servidor
+      // 2. Consulta al Servidor (Añadimos t= para evitar caché del navegador)
       const res = await fetch(`${baseUrl}/status?t=${Date.now()}`, {
         method: 'GET',
         headers: { 
