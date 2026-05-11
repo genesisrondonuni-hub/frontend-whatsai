@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { 
   Users, Play, Settings, MessageSquare, CheckCircle2, 
   Loader2, Wand2, RefreshCw, Database, Zap, Clock, 
-  AlertTriangle, CheckCircle, XCircle, Terminal, Info
+  AlertTriangle, CheckCircle, XCircle, Terminal, ShieldCheck
 } from 'lucide-react';
 
 export default function App() {
@@ -16,7 +16,7 @@ export default function App() {
   const [isSending, setIsSending] = useState(false);
   const [corsIssue, setCorsIssue] = useState(false);
 
-  // Datos de prueba: Directorio inicial
+  // Directorio de contactos
   const [contacts] = useState([
     { telefono: '584241234567', nombre: 'Eduardo', apellido: 'Avilán', genero: 'M' },
     { telefono: '584129876543', nombre: 'María', apellido: 'Pérez', genero: 'F' }
@@ -26,20 +26,17 @@ export default function App() {
     baseMessage: 'Hola {{Nombre}}, ¿cómo estás? Te escribo para comentarte que...',
   });
 
-  // Cargar configuración guardada al iniciar
   useEffect(() => {
-    const saved = localStorage.getItem('whatsAiConfigV2');
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      setSettings(parsed);
-    }
+    const saved = localStorage.getItem('whatsAiConfigPro_v3');
+    if (saved) setSettings(JSON.parse(saved));
   }, []);
 
-  // Radar de conexión (Consulta cada 5 segundos)
+  // Radar de conexión ultra-sensible
   useEffect(() => {
     let interval;
     if (settings.waApiUrl) {
-      interval = setInterval(() => checkApiStatus(), 5000);
+      checkApiStatus(); // Ejecución inmediata
+      interval = setInterval(() => checkApiStatus(), 4000);
     }
     return () => clearInterval(interval);
   }, [settings.waApiUrl]);
@@ -47,18 +44,17 @@ export default function App() {
   const checkApiStatus = async () => {
     if (!settings.waApiUrl) return;
     try {
-      // Limpieza de URL: Quita espacios y barras finales
       let baseUrl = settings.waApiUrl.trim().replace(/\/$/, "");
       if (!baseUrl.startsWith('http')) baseUrl = `https://${baseUrl}`;
 
-      const res = await fetch(`${baseUrl}/status?t=${Date.now()}`, {
-        mode: 'cors',
+      // Cabeceras especiales para saltar bloqueos de túneles
+      const res = await fetch(`${baseUrl}/status?cache_bust=${Date.now()}`, {
+        method: 'GET',
         headers: {
-          'Accept': 'application/json'
+          'Accept': 'application/json',
+          'bypass-tunnel-reminder': 'true', // Especial para Localtunnel/Pinggy
         }
       });
-      
-      if (!res.ok) throw new Error("Offline");
       
       const data = await res.json();
       setCorsIssue(false);
@@ -71,20 +67,18 @@ export default function App() {
         setQrCode(data.qr || '');
       }
     } catch (e) {
-      // Si falla, verificamos si es un problema de CORS (bloqueo del navegador)
       setApiStatus('error');
       setCorsIssue(true);
     }
   };
 
   const handleSaveSettings = () => {
-    localStorage.setItem('whatsAiConfigV2', JSON.stringify(settings));
+    localStorage.setItem('whatsAiConfigPro_v3', JSON.stringify(settings));
     setIsSaved(true);
     checkApiStatus();
-    setTimeout(() => setIsSaved(false), 3000);
+    setTimeout(() => setIsSaved(false), 2000);
   };
 
-  // Función para enviar mensajes uno a uno
   const handleSendMassive = async () => {
     if (!settings.waApiUrl || isSending) return;
     setIsSending(true);
@@ -101,198 +95,148 @@ export default function App() {
         try {
             const response = await fetch(`${baseUrl}/send`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ 
-                  number: messages[i].telefono, 
-                  text: messages[i].mensaje 
-                })
+                headers: { 'Content-Type': 'application/json', 'bypass-tunnel-reminder': 'true' },
+                body: JSON.stringify({ number: messages[i].telefono, text: messages[i].mensaje })
             });
             messages[i].status = response.ok ? 'sent' : 'error';
         } catch {
             messages[i].status = 'error';
         }
         setGeneratedMessages([...messages]);
-        // Espera de 2 segundos entre mensajes para evitar bloqueos
-        await new Promise(r => setTimeout(r, 2000));
+        await new Promise(r => setTimeout(r, 2500)); // Delay para seguridad de WhatsApp
     }
     setIsSending(false);
   };
 
-  // Integración con Gemini para variar mensajes
   const handleProcessIA = async () => {
-    if (!currentCampaign.baseMessage || isGenerating || !settings.geminiKey) {
-      alert("Configura tu Gemini Key primero");
-      return;
-    }
-    
+    if (!settings.geminiKey) return alert("Pega tu API Key de Gemini");
     setIsGenerating(true);
     try {
-      const prompt = `Actúa como un experto en marketing. Reescribe el siguiente mensaje de forma única y natural para cada contacto de la lista. 
-      MENSAJE BASE: "${currentCampaign.baseMessage}"
-      LISTA: ${JSON.stringify(contacts)}
-      
-      Responde EXCLUSIVAMENTE en formato JSON plano como una lista de objetos: 
-      [{"telefono": "...", "nombre": "...", "mensaje": "..."}]`;
-
-      const apiKey = settings.geminiKey;
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
+      const prompt = `Reescribe de forma única y profesional: "${currentCampaign.baseMessage}". Contactos: ${JSON.stringify(contacts)}. Responde solo JSON: [{"telefono":"", "mensaje":""}]`;
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${settings.geminiKey}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { responseMimeType: "application/json" }
-        })
+        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { responseMimeType: "application/json" } })
       });
-
-      const result = await response.json();
-      const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
-      const parsedData = JSON.parse(text);
-      
-      setGeneratedMessages(parsedData.map(m => ({ ...m, status: 'pending' })));
+      const data = await res.json();
+      const parsed = JSON.parse(data.candidates[0].content.parts[0].text);
+      setGeneratedMessages(parsed.map(m => ({ ...m, status: 'pending' })));
       setActiveTab('envios');
     } catch (e) {
-      alert("Error con Gemini. Revisa tu API Key y conexión.");
+      alert("Error IA: Revisa tu conexión");
     } finally {
       setIsGenerating(false);
     }
   };
 
   return (
-    <div className="flex h-screen bg-[#f8fafc] font-sans text-slate-900 overflow-hidden">
-      {/* Sidebar de Navegación */}
-      <aside className="w-80 bg-slate-900 text-white flex flex-col p-8 shadow-2xl shrink-0">
+    <div className="flex h-screen bg-[#f1f5f9] font-sans text-slate-900 overflow-hidden">
+      <aside className="w-80 bg-[#0f172a] text-white flex flex-col p-8 shadow-2xl shrink-0">
         <div className="flex items-center gap-4 mb-12">
-          <div className="bg-blue-600 p-2 rounded-2xl shadow-lg shadow-blue-600/30">
-            <Zap size={24} className="fill-white text-white" />
-          </div>
+          <Zap size={24} className="text-blue-400 fill-current" />
           <h1 className="font-black text-2xl uppercase italic tracking-tighter">WhatsAI PRO</h1>
         </div>
         
-        <nav className="space-y-3 flex-1">
+        <nav className="space-y-2 flex-1">
           <NavItem id="campana" icon={MessageSquare} label="Campaña IA" active={activeTab} onClick={setActiveTab} />
           <NavItem id="envios" icon={Play} label="Cola de Envío" active={activeTab} onClick={setActiveTab} />
           <NavItem id="config" icon={Settings} label="Conexión PC" active={activeTab} onClick={setActiveTab} />
         </nav>
 
-        {/* Indicador de Estado Global */}
-        <div className="mt-auto p-5 bg-white/5 rounded-[2rem] border border-white/10">
-          <div className="flex justify-between items-center mb-3">
-            <span className="text-[10px] font-black uppercase text-slate-500 tracking-widest">Motor Local</span>
-            <div className={`w-3 h-3 rounded-full ${apiStatus === 'conectado' ? 'bg-green-500 animate-pulse' : apiStatus === 'error' ? 'bg-red-500' : 'bg-amber-500'}`} />
+        <div className="mt-auto p-5 bg-white/5 rounded-3xl border border-white/10">
+          <div className="flex justify-between items-center mb-2 text-[10px] font-black uppercase text-slate-500">
+            <span>Motor Local</span>
+            <div className={`w-2 h-2 rounded-full ${apiStatus === 'conectado' ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
           </div>
-          <div className="flex items-center gap-3">
-             <Terminal size={14} className="text-slate-500" />
-             <span className="text-xs font-bold truncate">
-               {apiStatus === 'conectado' ? 'Sistema Listo' : apiStatus === 'error' ? 'Bloqueo de Túnel' : 'Buscando PC...'}
-             </span>
-          </div>
+          <span className="text-[11px] font-bold uppercase tracking-tight">
+            {apiStatus === 'conectado' ? 'Sistema Activo ✅' : 'Buscando Señal...'}
+          </span>
         </div>
       </aside>
 
-      {/* Área de Trabajo */}
       <main className="flex-1 p-12 overflow-y-auto">
         {activeTab === 'config' && (
-          <div className="max-w-4xl mx-auto space-y-8">
-            <h2 className="text-5xl font-black italic tracking-tighter mb-10">Configuración</h2>
+          <div className="max-w-4xl mx-auto space-y-8 animate-in fade-in duration-500">
+            <h2 className="text-5xl font-black italic tracking-tighter text-slate-900 mb-10">Conexión Maestro</h2>
             
-            <section className="bg-white rounded-[3rem] p-10 shadow-sm border border-slate-200">
-              <label className="block text-[11px] font-black uppercase text-slate-400 mb-4 tracking-widest">URL del Túnel (Pinggy/Cloudflare)</label>
+            <div className="bg-white rounded-[3rem] p-10 shadow-sm border border-slate-200">
+              <label className="block text-xs font-black uppercase text-slate-400 mb-4 tracking-widest">Enlace de Pinggy</label>
               <input 
-                type="url" 
-                value={settings.waApiUrl}
+                type="url" value={settings.waApiUrl}
                 onChange={e => setSettings({...settings, waApiUrl: e.target.value})}
-                placeholder="https://tu-link.pinggy-free.link"
-                className="w-full bg-slate-50 border-2 border-slate-100 rounded-3xl p-6 mb-8 focus:border-blue-600 outline-none font-bold text-lg"
+                placeholder="https://...run.pinggy-free.link"
+                className="w-full bg-slate-50 border-2 border-slate-100 rounded-3xl p-6 mb-8 focus:border-blue-600 outline-none font-bold text-slate-700"
               />
               
               {corsIssue && (
-                <div className="bg-red-50 rounded-3xl p-8 border border-red-100 mb-8 animate-in slide-in-from-top">
-                  <div className="flex items-start gap-4">
-                    <AlertTriangle className="text-red-500 shrink-0" size={24} />
-                    <div>
-                      <h4 className="font-black text-red-900 uppercase text-sm mb-2">Túnel Bloqueado por el Navegador</h4>
-                      <p className="text-xs text-red-800 leading-relaxed font-medium">
-                        Tu PC está encendida, pero el navegador bloqueó la conexión. Para arreglarlo:
-                        <br /><br />
-                        1. Haz clic aquí para abrir tu túnel: <a href={settings.waApiUrl} target="_blank" rel="noreferrer" className="underline font-black">Abrir Enlace Maestro</a>
-                        <br />
-                        2. Verás una página azul. Haz clic en el botón azul grande que dice <b>"Click to Continue"</b>.
-                        <br />
-                        3. Una vez que veas el mensaje "WhatsAI Local está ACTIVO", regresa a esta pestaña.
-                      </p>
-                    </div>
+                <div className="bg-amber-50 rounded-3xl p-8 border border-amber-100 mb-8 flex items-start gap-4">
+                  <ShieldCheck className="text-amber-600 shrink-0" size={24} />
+                  <div>
+                    <h4 className="font-black text-amber-900 uppercase text-xs mb-1">Autorización Requerida</h4>
+                    <p className="text-[11px] text-amber-800 leading-relaxed font-medium">
+                      Tu PC está conectada pero Chrome necesita que confirmes el acceso. <br />
+                      <b>1.</b> Abre <a href={settings.waApiUrl} target="_blank" className="underline font-black">este enlace</a> en una pestaña nueva.<br />
+                      <b>2.</b> Haz clic en el botón azul para aceptar.<br />
+                      <b>3.</b> Regresa aquí y todo se pondrá en verde.
+                    </p>
                   </div>
                 </div>
               )}
 
-              <div className="border-t border-slate-100 pt-10 min-h-[300px] flex items-center justify-center">
-                {apiStatus === 'desconectado' && qrCode ? (
-                  <div className="text-center space-y-6">
-                    <div className="bg-white p-6 rounded-[3rem] shadow-2xl border-4 border-blue-600 inline-block">
-                      <img src={qrCode} alt="WhatsApp QR" className="w-56 h-56" />
-                    </div>
-                    <p className="font-black text-blue-600 uppercase text-xs tracking-widest animate-pulse">Escanear con WhatsApp</p>
+              <div className="border-t border-slate-100 pt-10 flex justify-center min-h-[300px] items-center">
+                {apiStatus === 'conectado' ? (
+                  <div className="text-center animate-in zoom-in">
+                    <CheckCircle2 size={80} className="text-green-500 mx-auto mb-4" />
+                    <h3 className="text-3xl font-black italic uppercase italic tracking-tighter">PC Sincronizada</h3>
+                    <p className="text-slate-400 font-bold">WhatsApp está operando desde tu computadora.</p>
                   </div>
-                ) : apiStatus === 'conectado' ? (
-                  <div className="text-center py-10">
-                    <div className="bg-green-100 w-24 h-24 rounded-full flex items-center justify-center mx-auto mb-6">
-                      <CheckCircle2 size={48} className="text-green-600" />
-                    </div>
-                    <h3 className="text-3xl font-black italic uppercase">PC Sincronizada</h3>
-                    <p className="text-slate-400 font-medium mt-2">Ya puedes empezar tus campañas masivas.</p>
-                  </div>
+                ) : apiStatus === 'desconectado' && qrCode ? (
+                   <div className="text-center space-y-4">
+                      <img src={qrCode} alt="QR" className="w-56 h-56 mx-auto border-8 border-white shadow-2xl rounded-3xl" />
+                      <p className="font-black text-blue-600 uppercase text-[10px] animate-pulse">Escanea para Vincular</p>
+                   </div>
                 ) : (
-                  <div className="text-center py-10 flex flex-col items-center">
-                    <Loader2 className="animate-spin text-slate-200 mb-4" size={48} />
-                    <p className="opacity-30 italic font-bold text-slate-400 tracking-tight text-center">
-                      Esperando señal de tu PC...<br />
-                      Asegúrate de que 'node index.js' esté corriendo.
-                    </p>
+                  <div className="text-center opacity-20 flex flex-col items-center">
+                    <Loader2 className="animate-spin mb-4" size={40} />
+                    <p className="font-bold italic">Esperando señal del servidor local...</p>
                   </div>
                 )}
               </div>
-            </section>
+            </div>
 
-            <section className="bg-white rounded-[3rem] p-10 shadow-sm border border-slate-200">
-              <label className="block text-[11px] font-black uppercase text-slate-400 mb-4 tracking-widest">Google Gemini API Key</label>
+            <div className="bg-white rounded-[3rem] p-10 shadow-sm border border-slate-200">
+              <label className="block text-xs font-black uppercase text-slate-400 mb-4 tracking-widest">Gemini API Key</label>
               <input 
-                type="password" 
-                value={settings.geminiKey}
+                type="password" value={settings.geminiKey}
                 onChange={e => setSettings({...settings, geminiKey: e.target.value})}
-                placeholder="Pega aquí tu clave secreta de Gemini"
-                className="w-full bg-slate-50 border-2 border-slate-100 rounded-3xl p-6 outline-none focus:border-indigo-600 font-mono"
+                placeholder="Pega tu clave secreta de Gemini aquí"
+                className="w-full bg-slate-50 border-2 border-slate-100 rounded-3xl p-6 outline-none focus:border-blue-600 font-mono font-bold"
               />
-            </section>
+            </div>
 
-            <button onClick={handleSaveSettings} className="w-full bg-slate-900 text-white rounded-[2.5rem] py-8 font-black text-xl shadow-2xl hover:bg-black transition-all active:scale-95 uppercase tracking-tighter">
-              {isSaved ? 'DATOS GUARDADOS ✅' : 'GUARDAR CONFIGURACIÓN'}
+            <button onClick={handleSaveSettings} className="w-full bg-[#0f172a] text-white rounded-[2.5rem] py-8 font-black text-xl shadow-xl hover:scale-[1.02] transition-all uppercase tracking-tighter">
+              {isSaved ? 'CONFIGURACIÓN GUARDADA ✅' : 'GUARDAR Y VINCULAR PC'}
             </button>
           </div>
         )}
 
         {activeTab === 'campana' && (
           <div className="max-w-4xl mx-auto space-y-8 animate-in slide-in-from-bottom duration-500">
-             <h2 className="text-5xl font-black italic uppercase tracking-tighter">Mensaje de Campaña</h2>
+             <h2 className="text-5xl font-black italic uppercase tracking-tighter">Campaña IA</h2>
              <div className="bg-white rounded-[4rem] p-12 shadow-sm border border-slate-200 space-y-8">
-                <div className="relative">
-                  <textarea 
-                    value={currentCampaign.baseMessage}
-                    onChange={e => setCurrentCampaign({...currentCampaign, baseMessage: e.target.value})}
-                    className="w-full h-80 bg-slate-50 border-2 border-slate-100 rounded-[3rem] p-10 outline-none focus:border-blue-600 text-xl font-medium resize-none"
-                    placeholder="Escribe tu mensaje usando {{Nombre}}..."
-                  />
-                  <div className="absolute bottom-8 right-8 bg-white px-4 py-2 rounded-full border text-[10px] font-black text-slate-400 uppercase">
-                    Variables permitidas: Nombre, Apellido, Genero
-                  </div>
-                </div>
-                
+                <textarea 
+                  value={currentCampaign.baseMessage}
+                  onChange={e => setCurrentCampaign({...currentCampaign, baseMessage: e.target.value})}
+                  className="w-full h-80 bg-slate-50 border-2 border-slate-100 rounded-[3rem] p-10 outline-none focus:border-blue-600 text-xl font-medium resize-none"
+                  placeholder="Escribe tu mensaje..."
+                />
                 <button 
                   disabled={isGenerating || apiStatus !== 'conectado'}
                   onClick={handleProcessIA}
-                  className="w-full bg-gradient-to-r from-blue-600 to-indigo-700 text-white rounded-full py-8 font-black text-xl shadow-xl flex items-center justify-center gap-4 disabled:opacity-50 hover:brightness-110 transition-all"
+                  className="w-full bg-blue-600 text-white rounded-full py-8 font-black text-xl shadow-xl flex items-center justify-center gap-4 disabled:opacity-50 hover:brightness-110 transition-all"
                 >
                   {isGenerating ? <RefreshCw className="animate-spin" /> : <Wand2 />}
-                  {isGenerating ? 'IA TRABAJANDO...' : 'PROCESAR CON IA GEMINI'}
+                  {isGenerating ? 'IA TRABAJANDO...' : 'REDACTAR CON IA GEMINI'}
                 </button>
              </div>
           </div>
@@ -303,43 +247,35 @@ export default function App() {
             <div className="flex justify-between items-end mb-12">
                <div>
                   <h2 className="text-5xl font-black italic uppercase tracking-tighter">Cola de Envío</h2>
-                  <p className="text-slate-400 font-bold mt-2 uppercase text-xs tracking-widest">{generatedMessages.length} mensajes listos</p>
+                  <p className="text-slate-400 font-bold mt-2 uppercase text-xs tracking-widest">{generatedMessages.length} mensajes preparados</p>
                </div>
-               
                {generatedMessages.length > 0 && (
                  <button 
                   disabled={isSending || apiStatus !== 'conectado'}
                   onClick={handleSendMassive}
-                  className="bg-blue-600 text-white px-12 py-6 rounded-full font-black flex items-center gap-4 shadow-2xl hover:scale-105 transition-all disabled:opacity-50 text-lg"
+                  className="bg-green-600 text-white px-12 py-6 rounded-full font-black flex items-center gap-4 shadow-2xl hover:scale-105 transition-all disabled:opacity-50 text-lg"
                  >
                    {isSending ? <Loader2 className="animate-spin" /> : <Play size={24} className="fill-white" />}
-                   {isSending ? 'PROCESANDO ENVÍOS...' : 'INICIAR ENVÍO MASIVO'}
+                   {isSending ? 'ENVIANDO...' : 'INICIAR ENVÍO MASIVO'}
                  </button>
                )}
             </div>
 
             <div className="space-y-6">
-              {generatedMessages.length === 0 ? (
-                <div className="py-32 text-center bg-white rounded-[3rem] border border-dashed border-slate-300">
-                   <Clock size={48} className="mx-auto text-slate-200 mb-4" />
-                   <p className="font-bold text-slate-300 uppercase italic">No hay mensajes en cola. Ve a Campaña IA primero.</p>
-                </div>
-              ) : (
-                generatedMessages.map((msg, i) => (
-                  <div key={i} className={`bg-white p-10 rounded-[3rem] border-2 flex items-center justify-between transition-all ${msg.status === 'sent' ? 'border-green-100 bg-green-50/10' : 'border-slate-50'}`}>
-                    <div className="flex-1 mr-12">
-                      <div className="flex items-center gap-3 mb-3">
-                         <span className="text-[10px] font-black bg-slate-900 text-white px-3 py-1 rounded-full">{msg.telefono}</span>
-                         <StatusBadge status={msg.status} />
-                      </div>
-                      <p className="font-bold text-xl text-slate-800 leading-tight">{msg.mensaje}</p>
+              {generatedMessages.map((msg, i) => (
+                <div key={i} className={`bg-white p-10 rounded-[3rem] border-2 flex items-center justify-between transition-all ${msg.status === 'sent' ? 'border-green-100 bg-green-50/10' : 'border-slate-50'}`}>
+                  <div className="flex-1 mr-12">
+                    <div className="flex items-center gap-3 mb-3">
+                       <span className="text-[10px] font-black bg-slate-900 text-white px-3 py-1 rounded-full">{msg.telefono}</span>
+                       <StatusBadge status={msg.status} />
                     </div>
-                    <div className={`w-16 h-16 rounded-[1.5rem] flex items-center justify-center ${msg.status === 'sent' ? 'bg-green-100 text-green-600' : 'bg-slate-50 text-slate-200'}`}>
-                       {msg.status === 'sent' ? <CheckCircle size={32} /> : msg.status === 'error' ? <XCircle className="text-red-500" size={32} /> : <Clock size={32} />}
-                    </div>
+                    <p className="font-bold text-xl text-slate-800 leading-tight">{msg.mensaje}</p>
                   </div>
-                ))
-              )}
+                  <div className={`w-16 h-16 rounded-[1.5rem] flex items-center justify-center ${msg.status === 'sent' ? 'bg-green-100 text-green-600' : 'bg-slate-50 text-slate-200'}`}>
+                     {msg.status === 'sent' ? <CheckCircle size={32} /> : <Clock size={32} />}
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
         )}
@@ -348,27 +284,23 @@ export default function App() {
   );
 }
 
-// Componentes de Interfaz
 function NavItem({ id, icon: Icon, label, active, onClick }) {
   const isActive = active === id;
   return (
-    <button 
-      onClick={() => onClick(id)} 
-      className={`w-full flex items-center gap-4 px-6 py-5 rounded-[1.5rem] transition-all ${isActive ? 'bg-blue-600 text-white shadow-xl scale-105' : 'text-slate-400 hover:bg-white/5'}`}
-    >
+    <button onClick={() => onClick(id)} className={`w-full flex items-center gap-4 px-6 py-5 rounded-[1.5rem] transition-all ${isActive ? 'bg-blue-600 text-white shadow-xl scale-105' : 'text-slate-400 hover:bg-white/5'}`}>
       <Icon size={20} className={isActive ? 'fill-current' : ''} />
-      <span className="font-black text-sm tracking-tight uppercase">{label}</span>
+      <span className="font-black text-xs tracking-widest uppercase">{label}</span>
     </button>
   );
 }
 
 function StatusBadge({ status }) {
   const configs = {
-    pending: { label: 'En cola', color: 'bg-slate-100 text-slate-500' },
+    pending: { label: 'Listo', color: 'bg-slate-100 text-slate-500' },
     sending: { label: 'Enviando...', color: 'bg-amber-100 text-amber-600 animate-pulse' },
     sent: { label: 'Enviado ✅', color: 'bg-green-100 text-green-600' },
     error: { label: 'Fallo', color: 'bg-red-100 text-red-600' }
   };
   const config = configs[status] || configs.pending;
-  return <span className={`text-[10px] font-black uppercase px-3 py-1 rounded-full ${config.color}`}>{config.label}</span>;
+  return <span className={`text-[9px] font-black uppercase px-3 py-1 rounded-full ${config.color}`}>{config.label}</span>;
 }
